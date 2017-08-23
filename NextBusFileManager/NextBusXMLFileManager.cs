@@ -24,47 +24,19 @@ namespace NextBusFileManager
             string directory = "";
             while (!Directory.Exists(directory))
             {
-                Console.WriteLine("=> No directory set. Please set working directory:");
+                Console.WriteLine("=> No directory set. Working directory should contain only the xml files you wish to repackage.\n=> Please set a working directory:");
                 directory = Console.ReadLine();
             }
             directory = directory.Last() == '\\' ? directory : directory + "\\";
             string main_request = "l";
-            List<Vehicle> currentFile = new List<Vehicle>();
             while (!main_request.Equals("q"))
             {
-                Console.WriteLine("=> Input request: l - load xml files (in current directory), u - unload all files, w - write new file, q - quit program (no save).");
+                Console.WriteLine("=> Input request: w - write new file, q - quit program.");
                 main_request = Console.ReadLine();
-                if (main_request.Equals("l"))
+                if (main_request.Equals("w"))
                 {
-                    //Console.WriteLine("=> Enter input filename or filenames separated by comma:");
-                    //List<string> currentfilenames = Console.ReadLine().Split(',').ToList();
-                    Console.WriteLine("=> Loading all xml files in directory... Loaded files: ");
-                    string[] currentfilepaths = Directory.GetFiles(directory);//the filenames contain directory path
-                    foreach (string filepath in currentfilepaths)
-                    {
-                        string filename = filepath.Split('\\').Last();
-                        if (File.Exists(filepath) && filepath.Contains(".xml"))
-                        {
-                            currentFile.AddRange(DeSerializeXMLObject<List<Vehicle>>(filepath));
-                            Console.Write(string.Format("{0},", filename));
-                        }
-                        else
-                        {
-                            Console.WriteLine(string.Format("[!] File \"{0}\" cannot be loaded.", filename));
-                        }
-                    }
-                    Console.WriteLine("=> All xml files loaded.");
-                }
-                else if (main_request.Equals("u"))
-                {
-                    currentFile.Clear();
-                    Console.WriteLine("[!] Data cleared.");
-                    GC.Collect();
-                    GC.WaitForPendingFinalizers();
-                }
-                else if (main_request.Equals("w"))
-                {
-                    List<Vehicle> finalFile = new List<Vehicle>(currentFile);
+                    //initialize final file
+                    List<Vehicle> finalFile = new List<Vehicle>();
                     Console.WriteLine("=> Enter output filename (no extension):");
                     string newfilename = Console.ReadLine();
                     Console.WriteLine("=> Do you want to specify filter? y - specify filter, n - no filter, save now.");
@@ -76,7 +48,7 @@ namespace NextBusFileManager
                         string filter_option = "route";
                         while (!filter_option.Equals("q") && !filter_option.Equals("w"))
                         {
-                            Console.WriteLine("=> Add filter: route - filter by routeTags, vehicle - filter by vehicleIDs, w - done and write, q - quit and clear option");
+                            Console.WriteLine("=> Add filter: route - filter by routeTag (route number), vehicle - filter by id (vehicle IDs), w - done and write, q - quit and clear option");
                             filter_option = Console.ReadLine();
                             if (filter_option.Equals("route"))
                             {
@@ -93,21 +65,52 @@ namespace NextBusFileManager
                         }
                         if (filter_option.Equals("w"))
                         {
-                            if (routeNumbers.Count > 0)
+                            //go through every file and perform filter on the file, load filtered data
+                            Console.WriteLine("=> Filtering all xml files in directory... Files processed: ");
+                            string[] currentfilepaths = Directory.GetFiles(directory);//the filenames contain directory path
+                            foreach (string filepath in currentfilepaths)
                             {
-                                //finalFile = finalFile.Where(o => routeNumbers.Contains(o.RouteTag)).ToList();
-                                List<Vehicle> intermediateFile = new List<Vehicle>();
-                                foreach (string number in routeNumbers)
+                                List<Vehicle> currentFile = new List<Vehicle>();
+                                string filename = filepath.Split('\\').Last();
+                                if (File.Exists(filepath) && filepath.Contains(".xml"))
                                 {
-                                    intermediateFile.AddRange(finalFile.Where(o => o.RouteTag.Contains(number)).ToList());
+                                    //load this file
+                                    currentFile.AddRange(DeSerializeXMLObject<List<Vehicle>>(filepath));
+                                    //process and filter this file
+                                    if (routeNumbers.Count > 0)
+                                    {
+                                        //contains exacly the route number
+                                        currentFile = currentFile.Where(o => routeNumbers.Contains(o.RouteTag)).ToList();
+
+                                        ////contains any part of the route number
+                                        //List<Vehicle> intermediateFile = new List<Vehicle>();
+                                        //foreach (string number in routeNumbers)
+                                        //{
+                                        //    intermediateFile.AddRange(currentFile.Where(o => o.RouteTag.Contains(number)).ToList());
+                                        //}
+                                        //currentFile = intermediateFile;
+                                    }
+                                    if (vehNumbers.Count > 0)
+                                    {
+                                        currentFile = currentFile.Where(o => vehNumbers.Contains(o.Id)).ToList();
+                                    }
+                                    currentFile = currentFile.OrderBy(o => o.GPStime).ToList();
+                                    finalFile.AddRange(new List<Vehicle>(currentFile));//add a copy
+
+                                    Console.Write(string.Format("{0},", filename));//update user
                                 }
-                                finalFile = intermediateFile;
+                                else
+                                {
+                                    Console.WriteLine(string.Format("[!] File \"{0}\" cannot be loaded.", filename));//update user
+                                }
+
+                                //clear memory
+                                currentFile.Clear();
+                                GC.Collect();
+                                GC.WaitForPendingFinalizers();
                             }
-                            if (vehNumbers.Count > 0)
-                            {
-                                finalFile = finalFile.Where(o => vehNumbers.Contains(o.Id)).ToList();
-                            }
-                            finalFile = finalFile.OrderBy(o => o.GPStime).ToList();
+                            Console.WriteLine("=> All xml files processed, writting files...");
+
                             //write to xml
                             SerializeXMLObject(finalFile, directory + newfilename + ".xml");
                             //write to csv
@@ -118,8 +121,51 @@ namespace NextBusFileManager
                             filter_request = "n";//exit cond
                             Console.WriteLine("[!] Write Successful, exit to main menu.");
                         }
-                    }
-                }
+                    }//end if filter is y - yes
+                    else if (filter_request.Equals("n"))
+                    {
+                        Console.WriteLine("=> Adding all xml files in directory... Files added: ");
+                        string[] currentfilepaths = Directory.GetFiles(directory);//the filenames contain directory path
+                        foreach (string filepath in currentfilepaths)
+                        {
+                            List<Vehicle> currentFile = new List<Vehicle>();
+                            string filename = filepath.Split('\\').Last();
+                            if (File.Exists(filepath) && filepath.Contains(".xml"))
+                            {
+                                //load this file
+                                currentFile.AddRange(DeSerializeXMLObject<List<Vehicle>>(filepath));
+                                currentFile = currentFile.OrderBy(o => o.GPStime).ToList();
+                                finalFile.AddRange(new List<Vehicle>(currentFile));//add a copy
+
+                                Console.Write(string.Format("{0},", filename));//update user
+                            }
+                            else
+                            {
+                                Console.WriteLine(string.Format("[!] File \"{0}\" cannot be loaded.", filename));//update user
+                            }
+
+                            //clear memory
+                            currentFile.Clear();
+                            GC.Collect();
+                            GC.WaitForPendingFinalizers();
+                        }
+                        Console.WriteLine("=> All xml files added, writting files...");
+
+                        //write to xml
+                        SerializeXMLObject(finalFile, directory + newfilename + ".xml");
+                        //write to csv
+                        using (var csv = new CsvWriter(new StreamWriter(directory + newfilename + ".csv")))
+                        {
+                            csv.WriteRecords(finalFile);
+                        }
+                        filter_request = "n";//exit cond
+                        Console.WriteLine("[!] Write Successful, exit to main menu.");
+                    }//end else if n - no
+                    else
+                    {
+                        Console.WriteLine("[!] Invalid input, exit to main menu.");
+                    }//end else invalid
+                }//end if main request is w - write
             }
         }
 
