@@ -6,7 +6,9 @@ using System.Text;
 using System.Threading.Tasks;
 using System.Xml;
 using System.Xml.Serialization;
-using CsvHelper;
+using System.Collections.Concurrent;
+using System.Threading;
+using ServiceStack.Text;
 
 namespace NextBusFileManager
 {
@@ -36,131 +38,176 @@ namespace NextBusFileManager
                 if (main_request.Equals("w"))
                 {
                     //initialize final file
-                    List<Vehicle> finalFile = new List<Vehicle>();
                     Console.WriteLine("=> Enter output filename (no extension):");
                     string newfilename = Console.ReadLine();
                     Console.WriteLine("=> Do you want to specify filter? y - specify filter, n - no filter, save now.");
                     string filter_request = Console.ReadLine();
                     List<String> routeNumbers = new List<string>();
                     List<String> vehNumbers = new List<string>();
-                    if (filter_request.Equals("y"))
+                    if (filter_request.Equals("y") || filter_request.Equals("n"))
                     {
                         string filter_option = "route";
-                        while (!filter_option.Equals("q") && !filter_option.Equals("w"))
+                        if (filter_request.Equals("y"))
                         {
-                            Console.WriteLine("=> Add filter: route - filter by routeTag (route number), vehicle - filter by id (vehicle IDs), w - done and write, q - quit and clear option");
-                            filter_option = Console.ReadLine();
-                            if (filter_option.Equals("route"))
+                            while (!filter_option.Equals("q") && !filter_option.Equals("w"))
                             {
-                                Console.WriteLine("=> Enter ALL route number separated by comma:");
-                                string routeString = Console.ReadLine();
-                                routeNumbers.AddRange(routeString.Split(',').ToList()); //Array.ConvertAll()
-                            }
-                            else if (filter_option.Equals("vehicle"))
-                            {
-                                Console.WriteLine("=> Enter ALL vehicle number separated by comma:");
-                                string routeString = Console.ReadLine();
-                                vehNumbers.AddRange(routeString.Split(',').ToList()); //Array.ConvertAll()
+                                Console.WriteLine("=> Add filter: route - filter by routeTag (route number), vehicle - filter by id (vehicle IDs), w - done and write, q - quit and clear option");
+                                filter_option = Console.ReadLine();
+                                if (filter_option.Equals("route"))
+                                {
+                                    Console.WriteLine("=> Enter ALL route number separated by comma:");
+                                    string routeString = Console.ReadLine();
+                                    routeNumbers.AddRange(routeString.Split(',').ToList()); //Array.ConvertAll()
+                                }
+                                else if (filter_option.Equals("vehicle"))
+                                {
+                                    Console.WriteLine("=> Enter ALL vehicle number separated by comma:");
+                                    string routeString = Console.ReadLine();
+                                    vehNumbers.AddRange(routeString.Split(',').ToList()); //Array.ConvertAll()
+                                }
                             }
                         }
                         if (filter_option.Equals("w"))
                         {
                             //go through every file and perform filter on the file, load filtered data
-                            Console.WriteLine("=> Filtering all xml files in directory... Files processed: ");
-                            string[] currentfilepaths = Directory.GetFiles(directory);//the filenames contain directory path
-                            foreach (string filepath in currentfilepaths)
+                            Console.WriteLine("=> Processing all xml files in directory");
+
+                            //preparing csv file
+                            // more info: https://joshclose.github.io/CsvHelper/writing#writing-a-single-record
+                            string csv_filepath = directory + newfilename + ".csv";
+
+                            //string[] currentfilepaths = Directory.GetFiles(directory);//the filenames contain directory path
+                            List<string> currentfilepaths = Directory.GetFiles(directory, "*.xml", SearchOption.AllDirectories).ToList();
+                            int total_count = currentfilepaths.Count();
+                            int dataload_count = 0;
+                            int processed_count = 0;
+                            int write_count = 0;
+
+                            //processing object
+                            ConcurrentDictionary<string, List<Vehicle>> unsavedFiles = new ConcurrentDictionary<string, List<Vehicle>>();
+
+                            // ParallelTasks
+                            Parallel.Invoke(() =>
                             {
-                                List<Vehicle> currentFile = new List<Vehicle>();
-                                string filename = filepath.Split('\\').Last();
-                                if (File.Exists(filepath) && filepath.Contains(".xml"))
+                                //foreach (string filepath in currentfilepaths)
+                                Parallel.ForEach(currentfilepaths, new ParallelOptions { MaxDegreeOfParallelism = 4 }, filepath =>
                                 {
-                                    //load this file
+                                    List<Vehicle> currentFile = new List<Vehicle>();
+                                    string filename = filepath.Split('\\').Last();
+
+                                    //===load this file===
                                     currentFile.AddRange(DeSerializeXMLObject<List<Vehicle>>(filepath));
-                                    //process and filter this file
-                                    if (routeNumbers.Count > 0)
+                                    dataload_count++;
+                                    Console.Write("\r{1} of {0} loaded, {2} of {0} processed, {3} of {0} written...   ", total_count, dataload_count, processed_count, write_count);
+
+                                    //===process and filter this file===
+                                    if (filter_request.Equals("y") && routeNumbers.Count > 0)
                                     {
                                         //contains exacly the route number
-                                        currentFile = currentFile.Where(o => routeNumbers.Contains(o.RouteTag)).ToList();
-
-                                        ////contains any part of the route number
-                                        //List<Vehicle> intermediateFile = new List<Vehicle>();
-                                        //foreach (string number in routeNumbers)
-                                        //{
-                                        //    intermediateFile.AddRange(currentFile.Where(o => o.RouteTag.Contains(number)).ToList());
-                                        //}
-                                        //currentFile = intermediateFile;
+                                        currentFile = currentFile.AsParallel().Where(o => routeNumbers.Contains(o.RouteTag)).ToList();
                                     }
-                                    if (vehNumbers.Count > 0)
+                                    if (filter_request.Equals("y") && vehNumbers.Count > 0)
                                     {
-                                        currentFile = currentFile.Where(o => vehNumbers.Contains(o.Id)).ToList();
+                                        currentFile = currentFile.AsParallel().Where(o => vehNumbers.Contains(o.Id)).ToList();
                                     }
-                                    currentFile = currentFile.OrderBy(o => o.GPStime).ToList();
-                                    finalFile.AddRange(new List<Vehicle>(currentFile));//add a copy
 
-                                    Console.Write(string.Format("{0},", filename));//update user
-                                }
-                                else
-                                {
-                                    Console.WriteLine(string.Format("[!] File \"{0}\" cannot be loaded.", filename));//update user
-                                }
+                                    if (currentFile != null)
+                                    {
+                                        if (currentFile.Count > 0)
+                                        {
+                                            //currentFile = currentFile.AsParallel().OrderBy(o => o.GPStime).ToList();
+                                            //unsavedFiles.TryAdd(filepath, new List<Vehicle>(currentFile))
+                                            unsavedFiles.TryAdd(filepath, currentFile);
 
-                                //clear memory
-                                currentFile.Clear();
-                                GC.Collect();
-                                GC.WaitForPendingFinalizers();
-                            }
-                            Console.WriteLine("=> All xml files processed, writting files...");
-
-                            //write to xml
-                            SerializeXMLObject(finalFile, directory + newfilename + ".xml");
-                            //write to csv
-                            using (var csv = new CsvWriter(new StreamWriter(directory + newfilename + ".csv")))
+                                            processed_count++;
+                                            Console.Write("\r{1} of {0} loaded, {2} of {0} processed, {3} of {0} written...   ", total_count, dataload_count, processed_count, write_count);
+                                            //Console.Write(string.Format("{0},", filename));//update user
+                                        }
+                                        else
+                                        {
+                                            //revise count
+                                            total_count--;
+                                            dataload_count--;
+                                        }
+                                    }
+                                    else
+                                    {
+                                        //revise count
+                                        total_count--;
+                                        dataload_count--;
+                                    }
+                                    //currentFile.Clear();
+                                });
+                                //}
+                            },  // close first Action
+                            () =>
                             {
-                                csv.WriteRecords(finalFile);
-                            }
-                            filter_request = "n";//exit cond
-                            Console.WriteLine("[!] Write Successful, exit to main menu.");
+                                //===write to file===
+                                StreamWriter csv_file = new StreamWriter(csv_filepath);
+                                string record = "";
+                                string header = "Id,RouteTag,DirTag,Lat,Lon,SecsSinceReport,Predictable,Heading,GPStime\n";
+                                record = record + header;
+
+                                //flush tracker
+                                double flush_counter = 0;
+
+                                while (processed_count < total_count || unsavedFiles.Count > 0)
+                                {
+                                    if (unsavedFiles.Count > 0)
+                                    {
+                                        string filepath = unsavedFiles.Keys.First();
+                                        List<Vehicle> currentFile;
+                                        bool isFileRetrieve = unsavedFiles.TryGetValue(filepath, out currentFile);
+
+                                        ////foreach (Vehicle veh in currentFile)
+                                        //Parallel.ForEach(currentFile, veh =>
+                                        //{
+                                        //    string.Format("{0},{1},{2},{3},{4},{5},{6},{7},{8}\n", veh.Id, veh.RouteTag, veh.DirTag, veh.Lat, veh.Lon, veh.SecsSinceReport, veh.Predictable, veh.Heading, veh.GPStime);//"id,routeTag,dirTag,lat,lon,secsSinceReport,predictable,heading,GPStime";
+                                        //});
+                                        ////}
+
+                                        string currentRecord = CsvSerializer.SerializeToCsv(currentFile);
+                                        currentRecord = currentRecord.Remove(0, 72);
+                                        record += currentRecord;
+
+                                        flush_counter += record.Length;
+
+                                        //Flush approximately every 10MB
+                                        if (flush_counter > 10000000)
+                                        {
+                                            Console.Write("\r Writing files...   ");
+
+                                            //ProcessWrite(csv_filepath, record);
+                                            csv_file.Write(record);
+                                            csv_file.Flush();
+                                            flush_counter = 0;
+                                            record = "";//clear
+
+                                            //clear memory
+                                            GC.Collect();
+                                            GC.WaitForPendingFinalizers();
+                                        }
+
+                                        unsavedFiles.TryRemove(filepath, out currentFile);
+
+                                        write_count++;
+                                        Console.Write("\r{1} of {0} loaded, {2} of {0} processed, {3} of {0} written...   ", total_count, dataload_count, processed_count, write_count);
+
+                                        //clear memory
+                                        currentFile.Clear();
+                                    }
+                                    else
+                                    {
+                                        Thread.Sleep(1000);//wait a sec
+                                    }
+                                }
+                                csv_file.Close();
+                            } //close third Action,
+                            ); //close parallel.invoke
+
+                            Console.WriteLine("[!] Processing Successful, exit to main menu.");
                         }
                     }//end if filter is y - yes
-                    else if (filter_request.Equals("n"))
-                    {
-                        Console.WriteLine("=> Adding all xml files in directory... Files added: ");
-                        string[] currentfilepaths = Directory.GetFiles(directory);//the filenames contain directory path
-                        foreach (string filepath in currentfilepaths)
-                        {
-                            List<Vehicle> currentFile = new List<Vehicle>();
-                            string filename = filepath.Split('\\').Last();
-                            if (File.Exists(filepath) && filepath.Contains(".xml"))
-                            {
-                                //load this file
-                                currentFile.AddRange(DeSerializeXMLObject<List<Vehicle>>(filepath));
-                                currentFile = currentFile.OrderBy(o => o.GPStime).ToList();
-                                finalFile.AddRange(new List<Vehicle>(currentFile));//add a copy
-
-                                Console.Write(string.Format("{0},", filename));//update user
-                            }
-                            else
-                            {
-                                Console.WriteLine(string.Format("[!] File \"{0}\" cannot be loaded.", filename));//update user
-                            }
-
-                            //clear memory
-                            currentFile.Clear();
-                            GC.Collect();
-                            GC.WaitForPendingFinalizers();
-                        }
-                        Console.WriteLine("=> All xml files added, writting files...");
-
-                        //write to xml
-                        SerializeXMLObject(finalFile, directory + newfilename + ".xml");
-                        //write to csv
-                        using (var csv = new CsvWriter(new StreamWriter(directory + newfilename + ".csv")))
-                        {
-                            csv.WriteRecords(finalFile);
-                        }
-                        filter_request = "n";//exit cond
-                        Console.WriteLine("[!] Write Successful, exit to main menu.");
-                    }//end else if n - no
                     else
                     {
                         Console.WriteLine("[!] Invalid input, exit to main menu.");
@@ -168,6 +215,29 @@ namespace NextBusFileManager
                 }//end if main request is w - write
             }
         }
+
+        //#region ASYNC METHODS
+
+        ////source-https://blogs.msdn.microsoft.com/csharpfaq/2012/01/23/using-async-for-file-access/
+        //static Task ProcessWrite(string filePath, string text)
+        //{
+        //    return WriteTextAsync(filePath, text);
+        //}
+
+        //static async Task WriteTextAsync(string filePath, string text)
+        //{
+        //    byte[] encodedText = Encoding.Unicode.GetBytes(text);
+
+        //    using (FileStream sourceStream = new FileStream(filePath,
+        //        FileMode.Append, FileAccess.Write, FileShare.None,
+        //        bufferSize: 4096, useAsync: true))
+        //    {
+        //        await sourceStream.WriteAsync(encodedText, 0, encodedText.Length);
+        //        await sourceStream.FlushAsync();
+        //    };
+        //}
+
+        //#endregion
 
         #region XML Serializer Classes
         /// <summary>
@@ -184,7 +254,7 @@ namespace NextBusFileManager
             try
             {
                 XmlDocument xmlDocument = new XmlDocument();
-                XmlSerializer serializer = new XmlSerializer(serializableObject.GetType());
+                System.Xml.Serialization.XmlSerializer serializer = new System.Xml.Serialization.XmlSerializer(serializableObject.GetType());
                 using (MemoryStream stream = new MemoryStream())
                 {
                     serializer.Serialize(stream, serializableObject);
@@ -226,7 +296,7 @@ namespace NextBusFileManager
                 {
                     Type outType = typeof(T);
 
-                    XmlSerializer serializer = new XmlSerializer(outType);
+                    System.Xml.Serialization.XmlSerializer serializer = new System.Xml.Serialization.XmlSerializer(outType);
                     using (XmlReader reader = new XmlTextReader(read))
                     {
                         objectOut = (T)serializer.Deserialize(reader);

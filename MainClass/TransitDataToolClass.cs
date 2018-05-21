@@ -1,5 +1,4 @@
-﻿using CsvHelper;
-using Microsoft.Win32;
+﻿using Microsoft.Win32;
 using MainClass.DataTools;
 using System;
 using System.Collections;
